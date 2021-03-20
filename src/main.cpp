@@ -111,7 +111,8 @@ bool debugReady = false;
 // static bool led=0;
 unsigned long lastButtonTime = 0;
 bool buttonMoved = false;
-bool doTX = false;
+
+// bool doTX = false;
 
 // storage for DMA ouput from ADC
 #define DMA_BUFFER_LEN (4)          // maybe double buffer?
@@ -125,10 +126,38 @@ struct persistentData_s {
    uint8_t sync;
    uint8_t filterMode;
 };
-
 typedef persistentData_s persistentData_t;
 
-#define CONFIG_STORE_ID 1
+struct calibrationData_s {
+   uint16_t rollMin;
+   uint16_t rollCtr;
+   uint16_t rollMax;
+   uint16_t pitchMin;
+   uint16_t pitchCtr;
+   uint16_t pitchMax;
+   uint16_t throttleMin;
+   uint16_t throttleMax;
+   uint16_t yawMin;
+   uint16_t yawCtr;
+   uint16_t yawMax;
+};
+typedef calibrationData_s calibrationData_t;
+
+struct gimbalConfiguration_s {
+   uint8_t rollChannel : 7;
+   uint8_t rollReversed : 1;
+   uint8_t pitchChannel : 7;
+   uint8_t pitchReversed : 1;
+   uint8_t throttleChannel : 7;
+   uint8_t throttleReversed : 1;
+   uint8_t yawChannel : 7;
+   uint8_t yawReversed : 1;
+} __packed;
+typedef gimbalConfiguration_s gimbalConfiguration_t;
+
+#define CONFIG_STORE_ID        1
+#define CALIBRATION_STORE_ID   2
+#define GIMBAL_CONFIG_STORE_ID 3
 
 
 // filters
@@ -1753,8 +1782,8 @@ int main(void)
 
    delay(500);
 
-   // start the battery monitor ADC (it runs in continuous mode)
-   // need to do this before calling checkForChargeMode()
+   // Start the battery monitor ADC (it runs in continuous mode)
+   // Need to do this before calling checkForChargeMode()
    adc_software_trigger_enable(ADC1, ADC_REGULAR_CHANNEL);
 
    checkForChargeMode();
@@ -1764,11 +1793,9 @@ int main(void)
    LCD_Clear(DARKBLUE);
    BACK_COLOR = DARKBLUE;
 
-   printf("in main\n\r");
-
    FHSSrandomiseFHSSsequence();
 
-   // Try connecting to the radio
+   // Initialise the radio
    radio.currFreq = GetInitialFreq();
    radio.Begin();
 
@@ -1810,6 +1837,46 @@ int main(void)
    } else {
       printf("persistent data not found\n\r");
    }
+
+   calibrationData_t calibrationData;
+   res = SimpleStore::read(CALIBRATION_STORE_ID, sizeof(calibrationData), &calibrationData);
+   if (res == SS_OK) {
+      printf("calibration data read from store\n\r");
+   } else {
+      printf("no saved calibration data, using defaults\n\r");
+      calibrationData.rollMin = ADC_ROLL_MIN;
+      calibrationData.rollCtr = ADC_ROLL_CTR;
+      calibrationData.rollMax = ADC_ROLL_MAX;
+
+      calibrationData.pitchMin = ADC_PITCH_MIN;
+      calibrationData.pitchCtr = ADC_PITCH_CTR;
+      calibrationData.pitchMax = ADC_PITCH_MAX;
+
+      calibrationData.throttleMin = ADC_THROTTLE_MIN;
+      calibrationData.throttleMax = ADC_THROTTLE_MAX;
+
+      calibrationData.yawMin = ADC_YAW_MIN;
+      calibrationData.yawCtr = ADC_YAW_CTR;
+      calibrationData.yawMax = ADC_YAW_MAX;
+   }
+
+   gimbalConfiguration_t gimbalConfig;
+   res = SimpleStore::read(CALIBRATION_STORE_ID, sizeof(gimbalConfig), &gimbalConfig);
+   if (res == SS_OK) {
+      printf("gimbalConfig data read from store\n\r");
+   } else {
+      printf("no saved gimbalConfig data, using defaults\n\r");
+      gimbalConfig.rollChannel = ADC_A_CH;
+      gimbalConfig.pitchChannel = ADC_E_CH;
+      gimbalConfig.throttleChannel = ADC_T_CH;
+      gimbalConfig.yawChannel = ADC_R_CH;
+
+      gimbalConfig.rollReversed = ADC_ROLL_REVERSED;
+      gimbalConfig.pitchReversed = ADC_PITCH_REVERSED;
+      gimbalConfig.throttleReversed = ADC_THROTTLE_REVERSED;
+      gimbalConfig.yawReversed = ADC_YAW_REVERSED;
+   }
+
 
    // === Next section is the event loop ===
 

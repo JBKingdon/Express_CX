@@ -282,7 +282,7 @@ enum ports {
 
 // frsky M7 in the V5 prototype
 
-// Define the mapping between ADC channels and AETR (aileron, elevator, throttle, rudder or roll, pitch, throttle, yaw)
+// Define the mapping between ADC channels and AETR (aileron, elevator, throttle, rudder equivalent to roll, pitch, throttle, yaw)
 #define ADC_A_CH 3
 #define ADC_E_CH 2
 #define ADC_T_CH 0
