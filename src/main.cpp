@@ -28,7 +28,7 @@
 // #define DEBUG_STATUS
 
 // uncomment for setting up the gimbals
-// #define STICK_CALIBRATION
+#define STICK_CALIBRATION
 
 
 extern "C" {
@@ -94,6 +94,10 @@ extern "C" {
    void HandleFHSS();
    void ProcessTLMpacket();
 }
+
+// other forward declarations
+void updateDisplayCalibration();
+
 
 // debug baud rate
 #define BAUDRATE (460800U)
@@ -295,10 +299,20 @@ void DMA0_Channel0_IRQHandler(void)
       #error "need to define the ADC channel mapping"
       #endif
 
+      // TODO rename the filters to adc0..adc3 and map to aetr when scaling
+
+      #ifdef STICK_CALIBRATION
+      // during calibration it's easier if the raw display uses adc channels, so we need to use 1:1 mapping here
+      aud_roll.update(adc_value[0]);
+      aud_pitch.update(adc_value[1]);
+      aud_throttle.update(adc_value[2]);
+      aud_yaw.update(adc_value[3]);
+      #else
       aud_roll.update(adc_value[ADC_A_CH]);
       aud_pitch.update(adc_value[ADC_E_CH]);
       aud_throttle.update(adc_value[ADC_T_CH]);
       aud_yaw.update(adc_value[ADC_R_CH]);
+      #endif
 
       nSamples++;
       now = micros();
@@ -660,7 +674,7 @@ void GenerateSyncPacketData()
    PacketHeaderAddr = (DeviceAddr << 2) + SYNC_PACKET;
    radio.TXdataBuffer[0] = PacketHeaderAddr;
    uint8_t fhssIndex = FHSSgetCurrIndex();
-   printf("fhss %u\n\r", fhssIndex);
+   // printf("fhss %u\n\r", fhssIndex);
    radio.TXdataBuffer[1] = fhssIndex;
 
    #ifdef ELRS_OG_COMPATIBILITY
@@ -1221,7 +1235,7 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
    /////// This Part Handles the Telemetry Response ///////
    if (((uint8_t)ExpressLRS_currAirRate_Modparams->TLMinterval > 0) && thisFrameIsTelemetry())
    { // This frame is for telem, so don't attempt to transmit
-      printf("t skip\n\r");
+      // printf("t skip\n\r");
       return;
    }
 
@@ -1273,67 +1287,15 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
 
       #endif // USE_ADC_COPRO
 
-      // TODO make this a runtime mode that displays on the lcd
-      // lcd is 135x240, chars are 8x16, so we have 16x15 to work with.
-      // Apparently not, looks like the last char isn't usable, so 15x15
 
-      // TODO auto calibration mode
+      // TODO move calibration stuff out of this function
       #ifdef STICK_CALIBRATION
       #define SC_UPDATE_INTERVAL 100
       static uint32_t lastCalib = 0;
-      u8 buffer[32];
-      u16 foreground;
       if (millis() > (lastCalib + SC_UPDATE_INTERVAL))
       {
          lastCalib = millis();
-         static uint16_t rollMin = 9999, rollMax = 0, pitchMin = 9999, pitchMax = 0,
-                        thrMin = 9999, thrMax = 0, yawMin = 9999, yawMax = 0;
-
-         foreground = WHITE;
-         BACK_COLOR = DARKBLUE;
-
-         LCD_ShowString(0, 0, (const u8*)"  MIN  CUR  MAX", foreground);
-
-         uint16_t roll = aud_roll.getCurrent();
-         if (roll < rollMin)
-            rollMin = roll;
-         if (roll > rollMax)
-            rollMax = roll;
-
-         sprintf((char*)buffer, "A%4u %4u %4u", rollMin, roll, rollMax);
-         printf("%s\n\r", buffer);
-         LCD_ShowString(0, 32, buffer, foreground);
-
-         uint16_t pitch = aud_pitch.getCurrent();
-         if (pitch < pitchMin)
-            pitchMin = pitch;
-         if (pitch > pitchMax)
-            pitchMax = pitch;
-
-         sprintf((char*)buffer, "E%4u %4u %4u", pitchMin, pitch, pitchMax);
-         printf("%s\n\r", buffer);
-         LCD_ShowString(0, 48, buffer, foreground);
-
-         uint16_t throttle = aud_throttle.getCurrent();
-         if (throttle < thrMin)
-            thrMin = throttle;
-         if (throttle > thrMax)
-            thrMax = throttle;
-
-         sprintf((char*)buffer, "T%4u %4u %4u", thrMin, throttle, thrMax);
-         printf("%s\n\r", buffer);
-         LCD_ShowString(0, 64, buffer, foreground);
-
-         uint16_t yaw = aud_yaw.getCurrent();
-         if (yaw < yawMin)
-            yawMin = yaw;
-         if (yaw > yawMax)
-            yawMax = yaw;
-
-         sprintf((char*)buffer, "R%4u %4u %4u", yawMin, yaw, yawMax);
-         printf("%s\n\r", buffer);
-         LCD_ShowString(0, 80, buffer, foreground);
-
+         updateDisplayCalibration();
       }
       #endif // STICK_CALIBRATION
 
@@ -1364,8 +1326,10 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
 
    // gpio_bit_reset(LED_GPIO_PORT, LED_PIN);  // clear the rx debug pin as we're definitely not listening now
 
+   // disable transmissions during calibration for safety
+   #ifndef STICK_CALIBRATION
    radio.TXnb(radio.TXdataBuffer, 8);
-
+   #endif
 
 //   if (ChangeAirRateRequested)
 //   {
@@ -1622,6 +1586,96 @@ void updateDisplayEdit()
    BACK_COLOR = DARKBLUE;
 }
 
+/**
+ * Display mode for calibrating the gimbals
+ * Assumes that the ADC channels are mapped 0-3 to AETR when this is running
+ */
+void updateDisplayCalibration()
+{
+   static uint16_t min[4] = {9999, 9999, 9999, 9999};
+   static uint16_t max[4] = {0, 0, 0, 0};
+
+   u8 buffer[32];
+   u16 foreground;
+
+   foreground = WHITE;
+   BACK_COLOR = DARKBLUE;
+
+   LCD_ShowString(0, 0, (const u8*)"  MIN  CUR  MAX", foreground);
+
+   uint16_t adc0 = aud_roll.getCurrent();
+   if (adc0 < min[0]) min[0] = adc0;
+   if (adc0 > max[0]) max[0] = adc0;
+
+   sprintf((char*)buffer, "0 %4u %4u %4u", min[0], adc0, max[0]);
+   // printf("%s\n\r", buffer);
+   LCD_ShowString(0, 32, buffer, foreground);
+
+   uint16_t adc1 = aud_pitch.getCurrent();
+   if (adc1 < min[1]) min[1] = adc1;
+   if (adc1 > max[1]) max[1] = adc1;
+
+   sprintf((char*)buffer, "1 %4u %4u %4u", min[1], adc1, max[1]);
+   // printf("%s\n\r", buffer);
+   LCD_ShowString(0, 48, buffer, foreground);
+
+   uint16_t adc2 = aud_throttle.getCurrent();
+   if (adc2 < min[2]) min[2] = adc2;
+   if (adc2 > max[2]) max[2] = adc2;
+
+   sprintf((char*)buffer, "2 %4u %4u %4u", min[2], adc2, max[2]);
+   // printf("%s\n\r", buffer);
+   LCD_ShowString(0, 64, buffer, foreground);
+
+   uint16_t adc3 = aud_yaw.getCurrent();
+   if (adc3 < min[3]) min[3] = adc3;
+   if (adc3 > max[3]) max[3] = adc3;
+
+   sprintf((char*)buffer, "3 %4u %4u %4u", min[3], adc3, max[3]);
+   // printf("%s\n\r", buffer);
+   LCD_ShowString(0, 80, buffer, foreground);
+
+   // Add adc# -> channel mapping
+
+   sprintf((char*)buffer, "%u%u%u%u -> 0123", ADC_A_CH, ADC_E_CH, ADC_T_CH, ADC_R_CH);
+   LCD_ShowString(0, 112, buffer, foreground);
+
+   // show the scaled output
+   sprintf((char*)buffer, "OUT  OLD   NEW");
+   LCD_ShowString(0, 144, buffer, foreground);
+
+   uint16_t currentADC[4] = {adc0, adc1, adc2, adc3}; // FIXME this is silly, use array from the start and maybe one of those new fangled loop things
+
+   // what to do about a 'new' center value?
+   uint16_t newS = scaleADCtoCRSF(min[ADC_A_CH], ADC_ROLL_CTR, max[ADC_A_CH], currentADC[ADC_A_CH], ADC_ROLL_REVERSED);
+   sprintf((char*)buffer, " 0  %4lu  %4u", scaleRollData(currentADC[ADC_A_CH]), newS);
+   LCD_ShowString(0, 160, buffer, foreground);
+
+   newS = scaleADCtoCRSF(min[ADC_E_CH], ADC_PITCH_CTR, max[ADC_E_CH], currentADC[ADC_E_CH], ADC_PITCH_REVERSED);
+   sprintf((char*)buffer, " 1  %4lu  %4u", scalePitchData(currentADC[ADC_E_CH]), newS);
+   LCD_ShowString(0, 176, buffer, foreground);
+
+   newS = scaleADCtoCRSF(min[ADC_T_CH], (ADC_THROTTLE_MAX-ADC_THROTTLE_MIN)/2+ADC_THROTTLE_MIN, max[ADC_T_CH], currentADC[ADC_T_CH], ADC_THROTTLE_REVERSED);
+   sprintf((char*)buffer, " 2  %4lu  %4u", scaleThrottleData(currentADC[ADC_T_CH]), newS);
+   LCD_ShowString(0, 192, buffer, foreground);
+
+   newS = scaleADCtoCRSF(min[ADC_R_CH], ADC_YAW_CTR, max[ADC_R_CH], currentADC[ADC_R_CH], ADC_YAW_REVERSED);
+   sprintf((char*)buffer, " 3  %4lu  %4u", scaleYawData(currentADC[ADC_R_CH]), newS);
+   LCD_ShowString(0, 208, buffer, foreground);
+
+   // scaledADC[0] = scaleRollData(aud_roll.getCurrent());
+   // scaledADC[1] = scalePitchData(aud_pitch.getCurrent());
+   // scaledADC[2] = scaleThrottleData(aud_throttle.getCurrent());
+   // scaledADC[3] = scaleYawData(aud_yaw.getCurrent());
+
+
+
+   // add flags for reverse
+
+   // allow the calibration and config to be saved
+
+}
+
 // ============================
 
 void updateFilterSettings(uint8_t filterMode)
@@ -1788,7 +1842,10 @@ int main(void)
 
    checkForChargeMode();
 
+   // calibration mode disables the adc -> channel mapping and gives thottle warnings, so disable.
+   #ifndef STICK_CALIBRATION
    runSafetyChecks();
+   #endif
 
    LCD_Clear(DARKBLUE);
    BACK_COLOR = DARKBLUE;
