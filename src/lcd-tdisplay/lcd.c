@@ -583,7 +583,7 @@ void LCD_ShowChar(u16 x, u16 y, u8 num, u8 mode, u16 color)
     u8 temp;
     u8 pos, t;
     u16 x0 = x;
-    if (x > _width - 16 || y > _height - 16)return; //设置窗口
+    if (x > _width - 8 || y > _height - 16)return; //设置窗口
     num = num - ' '; //得到偏移后的值
     LCD_Address_Set(x, y, x + 8 - 1, y + 16 - 1); //设置光标位置
     if (!mode) { //非叠加方式
@@ -619,7 +619,7 @@ void LCD_ShowChar(u16 x, u16 y, u8 num, u8 mode, u16 color)
 void LCD_ShowString(u16 x, u16 y, const u8 *p, u16 color)
 {
     while (*p != '\0') {
-        if (x > _width - 16) {
+        if (x > _width - 8) {
             x = 0;
             y += 16;
         }
