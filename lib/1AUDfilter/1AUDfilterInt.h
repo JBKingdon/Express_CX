@@ -37,6 +37,17 @@
 
 #include <stdint.h>
 
+#define K_SHIFT_BITS 16
+// 2 * PI * 2^K_SHIFT_BITS for use when calculating k
+#define TWO_PI_SHIFTED (411775)
+
+// #define K_SHIFT_BITS 10
+// // 2 * PI * 2^K_SHIFT_BITS for use when calculating k
+// #define TWO_PI_SHIFTED (6434)
+
+
+#define PT_SCALE (128)
+
 #define ONEAUD_DEFAULT_DCUTOFF (50)
 
 /** Two PT1 filters with a common k
@@ -57,6 +68,25 @@ public:
     void setK(const uint32_t newK);
     int32_t getCurrent();
     void setInitial(const int32_t x);
+};
+
+/**
+ * Class that computes the differential of a datastream and applies a
+ * doublePT1 to the result.
+ */
+class DifferentiatingFilter
+{
+private:
+    DoublePT1filterInt inputFilter, outputFilter;
+    uint32_t sampleRate;
+    int32_t previousInput;
+    int16_t invocationCount;
+
+public:
+    DifferentiatingFilter(const uint32_t inputCutOffHz, const uint32_t outputCutOffHz, const uint32_t sampleRateHz);
+    int32_t update(const int32_t x);
+    int32_t getCurrent();
+    int32_t getInfilter();
 };
 
 class OneAUDfilterInt

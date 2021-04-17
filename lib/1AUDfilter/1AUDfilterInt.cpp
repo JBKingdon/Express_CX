@@ -37,12 +37,7 @@
 #include "1AUDfilterInt.h"
 
 #include <stdio.h>
-
-#define K_SHIFT_BITS 16
-// 2 * PI * 2^K_SHIFT_BITS for use when calculating k
-#define TWO_PI_SHIFTED (411775)
-
-#define PT_SCALE (128)
+#include <stdlib.h>
 
 DoublePT1filterInt::DoublePT1filterInt()
 {
@@ -59,8 +54,11 @@ void DoublePT1filterInt::setInitial(const int32_t x)
 int32_t DoublePT1filterInt::update(const int32_t x)
 {
     // factor of 2^K_SHIFT_BITS to compensate for resolution multiplier on the stored k
-    current1 = current1 + ((k * (x - current1)) >> K_SHIFT_BITS);
-    current2 = current2 + ((k * (current1 - current2)) >> K_SHIFT_BITS);
+
+    // Note that the cast to long is required to prevent overflow in the intermediate value
+    // TODO since the cast didn't seem to add too much time to the calculation, try using longs throughout
+    current1 = current1 + (((long)k * (x - current1)) >> K_SHIFT_BITS);
+    current2 = current2 + (((long)k * (current1 - current2)) >> K_SHIFT_BITS);
     return current2;
 }
 
@@ -78,6 +76,8 @@ uint32_t DoublePT1filterInt::getK()
 {
     return k;
 }
+
+// ------------------------------------------------------------------------------------------------
 
 /**
  *  Note that the cutoff frequencies must be less than sampleRate/(2Pi) in order for the filter
@@ -151,6 +151,20 @@ void OneAUDfilterInt::setSampleRate(const uint32_t newSampleRate)
     // The output PT1s get a new K at each update, so no need to set here
 }
 
+int32_t slewLimitHelper(const int32_t x, const int32_t prevX, const int32_t maxSlew)
+{
+    const int32_t s = x - prevX;
+
+    if (s > maxSlew) {
+        return prevX + maxSlew;
+    } else if ((-s) > maxSlew) {
+        return prevX - maxSlew;
+    }
+
+    return x;
+}
+
+
 // calculate a modified value of x that respects the slew limit
 int32_t OneAUDfilterInt::slewLimit(const int32_t x)
 {
@@ -162,29 +176,32 @@ int32_t OneAUDfilterInt::slewLimit(const int32_t x)
         return x;
     }
 
-    const int32_t s = x - prevInput;
+    return slewLimitHelper(x, prevInput, maxSlewPerSample);
 
-    // avAbsSlew -= avAbsSlew/8;
-    // if (s>0) {
-    //     avAbsSlew += s/8;
-    // } else {
-    //     avAbsSlew += (-s)/8;
+    // const int32_t s = x - prevInput;
+
+    // // avAbsSlew -= avAbsSlew/8;
+    // // if (s>0) {
+    // //     avAbsSlew += s/8;
+    // // } else {
+    // //     avAbsSlew += (-s)/8;
+    // // }
+
+    // if (s > (int32_t)maxSlewPerSample) {
+    //     // Serial.printf("%d > %d (av %d)\n", s, maxSlewPerSample, avAbsSlew/8);
+    //     return prevInput + maxSlewPerSample;
+    // } else if ((-s) > (int32_t)maxSlewPerSample) {
+    //     // Serial.printf("%d < -%d (av %d)\n", s, maxSlewPerSample, avAbsSlew/8);
+    //     return prevInput - maxSlewPerSample;
     // }
 
-    if (s > (int32_t)maxSlewPerSample) {
-        // Serial.printf("%d > %d (av %d)\n", s, maxSlewPerSample, avAbsSlew/8);
-        return prevInput + maxSlewPerSample;
-    } else if ((-s) > (int32_t)maxSlewPerSample) {
-        // Serial.printf("%d < -%d (av %d)\n", s, maxSlewPerSample, avAbsSlew/8);
-        return prevInput - maxSlewPerSample;
-    }
-
-    return x;
+    // return x;
 }
 
 // update the filter with a new value
 // scaling is crucial to retain precision while avoiding overflow
-// TODO figure our the range of input values that don't overflow
+// TODO figure out the range of input values that don't overflow
+// XXX TESTING returning dx instead of the new current value
 int32_t OneAUDfilterInt::update(const int32_t newValue)
 {
     // slew limit the input
@@ -225,6 +242,7 @@ int32_t OneAUDfilterInt::update(const int32_t newValue)
     prevInput = limitedNew; // XXX originally newValue, but that allows the fixed point math to overflow at startup
 
     return mf / PT_SCALE;
+    // return dx / PT_SCALE;
 }
 
 // get the current filtered value
@@ -236,4 +254,60 @@ int32_t OneAUDfilterInt::getCurrent()
 float OneAUDfilterInt::getCutoff()
 {
     return (float(oFilt.getK()) * sampleRate) / TWO_PI_SHIFTED;
+}
+
+
+// ------------------------------------------------------------------------------------------------
+
+
+DifferentiatingFilter::DifferentiatingFilter(const uint32_t inputcutOffHz, const uint32_t outputcutOffHz, const uint32_t sampleRateHz)
+{
+    const uint32_t kInput = inputcutOffHz * TWO_PI_SHIFTED / sampleRateHz;
+    const uint32_t kOutput = outputcutOffHz * TWO_PI_SHIFTED / sampleRateHz;
+
+    inputFilter.setK(kInput);
+    outputFilter.setK(kOutput);    
+
+    sampleRate = sampleRateHz;
+    invocationCount = 0;
+}
+
+int32_t DifferentiatingFilter::update(const int32_t x)
+{
+    #define DX_SCALE 64; // chosen to avoid overflowing the filter
+
+    int32_t inputMaxSlew = 1000 * PT_SCALE;
+    int32_t outputMaxSlew = 4000 * PT_SCALE;
+
+    if (invocationCount < 8192) {
+        // scale down the skew limits while the filter is initialising
+        inputMaxSlew  /= 1024 - (invocationCount/8);
+        outputMaxSlew /= 1024 - (invocationCount/8);
+        invocationCount++;
+    }
+
+    const int32_t prevSmoothed = inputFilter.getCurrent();
+
+    const int32_t limitedX = slewLimitHelper(x * PT_SCALE, prevSmoothed, inputMaxSlew); // last value is max slew per sample
+
+    // printf("lx %ld\n", limitedX);
+
+    const int32_t newSmoothed = inputFilter.update(limitedX);
+
+    const int32_t dX = (newSmoothed - prevSmoothed) * DX_SCALE;
+
+    const int32_t prevDX = outputFilter.getCurrent();
+    const int32_t limitedDX = slewLimitHelper(dX, prevDX, outputMaxSlew);
+
+    return outputFilter.update(limitedDX) / PT_SCALE;
+}
+
+int32_t DifferentiatingFilter::getCurrent()
+{
+    return outputFilter.getCurrent() / PT_SCALE;
+}
+
+int32_t DifferentiatingFilter::getInfilter()
+{
+    return inputFilter.getCurrent() / PT_SCALE;
 }

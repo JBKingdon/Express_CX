@@ -25,7 +25,7 @@
 #define DEBUG_SUPPRESS
 
 // Uncomment to enable some debug output on the LCD
-// #define DEBUG_STATUS
+#define DEBUG_STATUS
 
 // uncomment for setting up the gimbals
 // #define STICK_CALIBRATION
@@ -97,6 +97,9 @@ extern "C" {
 
 // debug baud rate
 #define BAUDRATE (460800U)
+// #define BAUDRATE (921600) // didn't work
+// #define BAUDRATE (576000) // didn't work
+
 
 // low battery warning threshold in tenths of a volt
 #define LOW_BAT_THRESHOLD (34)
@@ -166,7 +169,7 @@ float slewLimit = 150000.0f;  // 10000 limits rate on stick bounce test, 20000 d
 
 // This is actually the rate at which the filters are updated which can be (and is)
 // different to the rate the ADCs are running at when using oversampling.
-float sampleRate = 8000;    // Hz   XXX keep this in step with the ADC setup
+const float sampleRate = 8000;    // Hz   XXX keep this in step with the ADC setup
 
 float dCutoff = 50.0f;      // Hz
 
@@ -180,6 +183,10 @@ OneAUDfilterInt aud_roll(currentFilter.minCutoff, currentFilter.maxCutoff, int(1
 OneAUDfilterInt aud_pitch(currentFilter.minCutoff, currentFilter.maxCutoff, int(1.0f/currentFilter.beta), sampleRate, dCutoff, slewLimit, 2000);
 OneAUDfilterInt aud_yaw(currentFilter.minCutoff, currentFilter.maxCutoff, int(1.0f/currentFilter.beta), sampleRate, dCutoff, slewLimit, 2000);
 OneAUDfilterInt aud_throttle(currentFilter.minCutoff, currentFilter.maxCutoff, int(1.0f/currentFilter.beta), sampleRate, dCutoff, slewLimit, 300);
+
+DifferentiatingFilter rollVelocityFilter(200, 250, sampleRate), rollAccelerationFilter(200, 200, sampleRate);
+DifferentiatingFilter pitchVelocityFilter(200, 250, sampleRate), pitchAccelerationFilter(200, 200, sampleRate);
+
 
 // power values in prePA dBm (i.e. what the sx1280 is outputting to the PA or antenna if no PA present)
 // int radioPower = -18; // low power testing to check crc/fec behaviour using e28-12
@@ -270,6 +277,15 @@ void DMA0_Channel0_IRQHandler(void)
       aud_pitch.update(adc_value[ADC_E_CH]);
       aud_throttle.update(adc_value[ADC_T_CH]);
       aud_yaw.update(adc_value[ADC_R_CH]);
+
+      // Derivatives (filters automatically calculate the derivative of the input)
+      // Only for roll and pitch to save on OTA time
+      int32_t vR = rollVelocityFilter.update(adc_value[ADC_A_CH]);
+      rollAccelerationFilter.update(vR);
+
+      int32_t vP = pitchVelocityFilter.update(adc_value[ADC_E_CH]);
+      pitchAccelerationFilter.update(vP);
+
 
       nSamples++;
       now = micros();
@@ -1119,7 +1135,7 @@ void ICACHE_RAM_ATTR GenerateChannelDataHybridSwitch8(volatile uint8_t* Buffer, 
   Buffer[6] = (currentSwitches[0] & 0b11) << 5; // note this leaves the top bit of byte 6 unused
 
   // find the next switch to send
-  uint8_t nextSwitchIndex = getNextSwitchIndex() & 0b111;      // mask for paranoia
+  uint8_t nextSwitchIndex = getNextSwitchIndex() & 0b111;  // mask for paranoia
   uint8_t value = currentSwitches[nextSwitchIndex] & 0b11; // mask for paranoia
 
   // put the bits into buf[6]. nextSwitchIndex is in the range 1 through 7 so takes 3 bits
@@ -1325,6 +1341,9 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
       scaledADC[1] = scalePitchData(aud_pitch.getCurrent());
       scaledADC[2] = scaleThrottleData(aud_throttle.getCurrent());
       scaledADC[3] = scaleYawData(aud_yaw.getCurrent());
+
+      printf("%u %ld %ld ", scaledADC[0], rollVelocityFilter.getCurrent(), rollAccelerationFilter.getCurrent());
+      printf("%u %ld %ld\n", scaledADC[1], pitchVelocityFilter.getCurrent(), pitchAccelerationFilter.getCurrent());
 
       GenerateChannelDataHybridSwitch8(radio.TXdataBuffer, scaledADC, DeviceAddr);
    }
