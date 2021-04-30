@@ -41,7 +41,27 @@ expresslrs_rf_pref_params_s ExpressLRS_AirRateRFperf[RATE_MAX] = {
     {2, RATE_150HZ, -112, 8770, 3500, 2500, 2000, 5000},
     {3, RATE_50HZ, -117, 17540, 3500, 2500, 2000, 5000}}; // this means always send sync on ch[0] as soon as we can
 
-#else // not ELRS_OG_COMPATIBILITY
+#elif defined(USE_DERIVATIVES)
+
+// with derivatives, 13 byte packets could give beast mode at 666Hz with SF5, BW1600, li4/7. Sens -99
+// 333Hz with BW800
+
+expresslrs_mod_settings_s ExpressLRS_AirRateConfig[RATE_MAX] = {
+    // enum_rate,       bw,                  sf,                 cr,              interval us, TLMinterval, FHSShopInterval, PreambleLen
+    {0, RATE_BEAST_666, SX1280_LORA_BW_1600, SX1280_LORA_SF5, SX1280_LORA_CR_LI_4_7, 1501,  TLM_RATIO_1_128,     8,          12},
+    };
+
+expresslrs_rf_pref_params_s ExpressLRS_AirRateRFperf[RATE_MAX] = {
+
+    // NB RFmodeCycleInterval is used both for the time between switch packet rates when searching for a connection, and also as a
+    //    timeout for deciding the link has failed!
+    //    RFmodeCycleAddtionalTime is used to timeout a connection that can't get out of tentative state
+
+    //      rate          sens  TOA RFmodeCycleInterval RFmodeCycleAddtionalTime SyncPktIntervalDisconnected SyncPktIntervalConnected
+    {0, RATE_BEAST_666,   -99,  1187,  500,               1000,                       100,                       5000},
+    };
+
+#else
 
 expresslrs_mod_settings_s ExpressLRS_AirRateConfig[RATE_MAX] = {
     // enum_rate,       bw,                 sf,                 cr,            interval us, TLMinterval, FHSShopInterval, PreambleLen

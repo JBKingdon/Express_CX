@@ -272,39 +272,61 @@ DifferentiatingFilter::DifferentiatingFilter(const uint32_t inputcutOffHz, const
     invocationCount = 0;
 }
 
+// int32_t DifferentiatingFilter::update(const int32_t x)
+// {
+//     #define DX_SCALE 64; // chosen to avoid overflowing the filter
+
+//     int32_t inputMaxSlew = 1000 * PT_SCALE;
+//     int32_t outputMaxSlew = 4000 * PT_SCALE;
+
+//     if (invocationCount < 8192) {
+//         // scale down the skew limits while the filter is initialising
+//         inputMaxSlew  /= 1024 - (invocationCount/8);
+//         outputMaxSlew /= 1024 - (invocationCount/8);
+//         invocationCount++;
+//     }
+
+//     const int32_t prevSmoothed = inputFilter.getCurrent();
+
+//     const int32_t limitedX = slewLimitHelper(x * PT_SCALE, prevSmoothed, inputMaxSlew); // last value is max slew per sample
+
+//     // printf("lx %ld\n", limitedX);
+
+//     const int32_t newSmoothed = inputFilter.update(limitedX);
+
+//     const int32_t dX = (newSmoothed - prevSmoothed) * DX_SCALE;
+
+//     const int32_t prevDX = outputFilter.getCurrent();
+//     const int32_t limitedDX = slewLimitHelper(dX, prevDX, outputMaxSlew);
+
+//     return outputFilter.update(limitedDX) / PT_SCALE;
+// }
+
+
 int32_t DifferentiatingFilter::update(const int32_t x)
 {
-    #define DX_SCALE 64; // chosen to avoid overflowing the filter
+    // #define DX_SCALE 16384;
 
-    int32_t inputMaxSlew = 1000 * PT_SCALE;
-    int32_t outputMaxSlew = 4000 * PT_SCALE;
+    int32_t outputMaxSlew = 20000;
 
     if (invocationCount < 8192) {
         // scale down the skew limits while the filter is initialising
-        inputMaxSlew  /= 1024 - (invocationCount/8);
         outputMaxSlew /= 1024 - (invocationCount/8);
         invocationCount++;
     }
 
-    const int32_t prevSmoothed = inputFilter.getCurrent();
-
-    const int32_t limitedX = slewLimitHelper(x * PT_SCALE, prevSmoothed, inputMaxSlew); // last value is max slew per sample
-
-    // printf("lx %ld\n", limitedX);
-
-    const int32_t newSmoothed = inputFilter.update(limitedX);
-
-    const int32_t dX = (newSmoothed - prevSmoothed) * DX_SCALE;
+    const int32_t dX = x;
 
     const int32_t prevDX = outputFilter.getCurrent();
     const int32_t limitedDX = slewLimitHelper(dX, prevDX, outputMaxSlew);
 
-    return outputFilter.update(limitedDX) / PT_SCALE;
+    return outputFilter.update(limitedDX);
 }
+
 
 int32_t DifferentiatingFilter::getCurrent()
 {
-    return outputFilter.getCurrent() / PT_SCALE;
+    return outputFilter.getCurrent();
 }
 
 int32_t DifferentiatingFilter::getInfilter()

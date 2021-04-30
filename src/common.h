@@ -75,6 +75,7 @@ typedef enum
 typedef enum
 {
     RATE_1KHZ  = 0,
+    RATE_BEAST_666 = 0,
     RATE_800HZ = 1,
     RATE_500HZ = 2,
     RATE_250HZ = 3,
@@ -124,6 +125,9 @@ typedef struct expresslrs_mod_settings_s
 #ifdef ELRS_OG_COMPATIBILITY
 #define RATE_MAX 4  // actually the number of rates, so the max value is RATE_MAX-1
 #define RATE_DEFAULT 0
+#elif defined(USE_DERIVATIVES)
+#define RATE_MAX 1  // actually the number of rates, so the max value is RATE_MAX-1
+#define RATE_DEFAULT 0
 #else
 #define RATE_MAX 6  // actually the number of rates, so the max value is RATE_MAX-1
 #define RATE_DEFAULT 2
@@ -158,4 +162,4 @@ extern expresslrs_rf_pref_params_s *ExpressLRS_currAirRate_RFperfParams;
 extern bool ExpressLRS_AirRateNeedsUpdate;
 
 //ELRS SPECIFIC OTA CRC 
-#define ELRS_CRC_POLY 0x83
+#define ELRS_CRC_POLY 0x83 // XXX this is wrong and gives poor performance. Should be 0x07, but then it won't be compatible with the OG commit currently supported

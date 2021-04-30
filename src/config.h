@@ -25,6 +25,19 @@
     #define Regulatory_Domain_ISM_2400_NA
 #endif
 
+#define USE_DERIVATIVES // don't try and use this with ELRS compatibility mode!
+
+#if defined(USE_DERIVATIVES) && defined(ELRS_OG_COMPATIBILITY)
+#error "can't use derivatives with ELRS compatibility mode"
+#endif
+
+
+#ifdef USE_DERIVATIVES
+#define OTA_PAYLOAD_SIZE 13 // includes the header and crc, i.e. it's the number of bytes to transmit
+#else
+#define OTA_PAYLOAD_SIZE 8
+#endif
+
 // TODO make this runtime dynamic
 // define the type of radio module being used 
 

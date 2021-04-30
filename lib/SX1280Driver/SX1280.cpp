@@ -87,9 +87,9 @@ void SX1280Driver::setupLora()
     this->ConfigModParams(currBW, currSF, currCR);                          //Step 5: Configure Modulation Params
     hal.WriteCommand(SX1280_RADIO_SET_AUTOFS, 0x01);                        //enable auto FS
     #ifdef USE_HARDWARE_CRC
-    this->SetPacketParams(12, SX1280_LORA_PACKET_IMPLICIT, 8, SX1280_LORA_CRC_ON, SX1280_LORA_IQ_NORMAL);
+    this->SetPacketParams(12, SX1280_LORA_PACKET_IMPLICIT, OTA_PAYLOAD_SIZE, SX1280_LORA_CRC_ON, SX1280_LORA_IQ_NORMAL);
     #else
-    this->SetPacketParams(12, SX1280_LORA_PACKET_IMPLICIT, 8, SX1280_LORA_CRC_OFF, SX1280_LORA_IQ_NORMAL);
+    this->SetPacketParams(12, SX1280_LORA_PACKET_IMPLICIT, OTA_PAYLOAD_SIZE, SX1280_LORA_CRC_OFF, SX1280_LORA_IQ_NORMAL);
     #endif
 }
 
@@ -136,9 +136,9 @@ void ICACHE_RAM_ATTR SX1280Driver::Config(SX1280_RadioLoRaBandwidths_t bw, SX128
     this->SetMode(SX1280_MODE_STDBY_XOSC);
     ConfigModParams(bw, sf, cr);
     #ifdef USE_HARDWARE_CRC
-    SetPacketParams(PreambleLength, SX1280_LORA_PACKET_IMPLICIT, 8, SX1280_LORA_CRC_ON, SX1280_LORA_IQ_NORMAL); // TODO don't make static etc.
+    SetPacketParams(PreambleLength, SX1280_LORA_PACKET_IMPLICIT, OTA_PAYLOAD_SIZE, SX1280_LORA_CRC_ON, SX1280_LORA_IQ_NORMAL); // TODO don't make static etc.
     #else
-    SetPacketParams(PreambleLength, SX1280_LORA_PACKET_IMPLICIT, 8, SX1280_LORA_CRC_OFF, SX1280_LORA_IQ_NORMAL); // TODO don't make static etc.
+    SetPacketParams(PreambleLength, SX1280_LORA_PACKET_IMPLICIT, OTA_PAYLOAD_SIZE, SX1280_LORA_CRC_OFF, SX1280_LORA_IQ_NORMAL); // TODO don't make static etc.
     #endif
 
     SetFrequency(freq);
@@ -452,6 +452,9 @@ void SX1280Driver::ClearIrqStatus(uint16_t irqMask)
 
 // TODO - how does the syncword get set on TX?
 
+/**
+ * XXX NB The length only controls how many bytes are copied to the buffer, not how many are sent by the radio!!!
+ */
 void SX1280Driver::TXnb(volatile uint8_t *data, uint8_t length)
 {
     instance->ClearIrqStatus(SX1280_IRQ_RADIO_ALL);
@@ -487,7 +490,7 @@ void SX1280Driver::TXnb(volatile uint8_t *data, uint8_t length)
 void SX1280Driver::readRXData()
 {
     uint8_t FIFOaddr = instance->GetRxBufferAddr();
-    hal.ReadBuffer(FIFOaddr, instance->RXdataBuffer, 8);
+    hal.ReadBuffer(FIFOaddr, instance->RXdataBuffer, OTA_PAYLOAD_SIZE);
 }
 
 void SX1280Driver::RXnb()

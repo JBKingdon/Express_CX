@@ -7,11 +7,11 @@
 #include "SX1280_hal.h" //  only needed for MAX_PRE_PA_POWER
 #include "FHSS.h"
 #include "SimpleStore.h"
+#include "OTA.h"
 
 // Next:
 //    UI improvements
 //    Stick calibration
-//    Auto power limit when disarmed - or full dynamic power?
 
 //    msp for vtx channel?
    // Info from BF msp.c:
@@ -184,8 +184,13 @@ OneAUDfilterInt aud_pitch(currentFilter.minCutoff, currentFilter.maxCutoff, int(
 OneAUDfilterInt aud_yaw(currentFilter.minCutoff, currentFilter.maxCutoff, int(1.0f/currentFilter.beta), sampleRate, dCutoff, slewLimit, 2000);
 OneAUDfilterInt aud_throttle(currentFilter.minCutoff, currentFilter.maxCutoff, int(1.0f/currentFilter.beta), sampleRate, dCutoff, slewLimit, 300);
 
-DifferentiatingFilter rollVelocityFilter(200, 250, sampleRate), rollAccelerationFilter(200, 200, sampleRate);
-DifferentiatingFilter pitchVelocityFilter(200, 250, sampleRate), pitchAccelerationFilter(200, 200, sampleRate);
+// multiplier when putting data into the velocity filter
+#define VELOCITY_SCALE 16384
+// divider when taking data out of the velocity filter
+#define VELOCITY_OUTPUT_SCALE 100
+
+DifferentiatingFilter rollVelocityFilter(200, 130, sampleRate), rollAccelerationFilter(200, 80, sampleRate);
+DifferentiatingFilter pitchVelocityFilter(200, 100, sampleRate), pitchAccelerationFilter(200, 100, sampleRate);
 
 
 // power values in prePA dBm (i.e. what the sx1280 is outputting to the PA or antenna if no PA present)
@@ -259,6 +264,7 @@ unsigned long filterUpdateTime = 0; // for debugging the cpu usage of the filter
 void DMA0_Channel0_IRQHandler(void)
 {
    static unsigned long last = 0;
+   static uint16_t prevRoll=0, prevPitch=0;
 
    if (SET == dma_interrupt_flag_get(DMA0, DMA_CH0, DMA_INT_FLAG_FTF))
    {
@@ -278,14 +284,33 @@ void DMA0_Channel0_IRQHandler(void)
       aud_throttle.update(adc_value[ADC_T_CH]);
       aud_yaw.update(adc_value[ADC_R_CH]);
 
-      // Derivatives (filters automatically calculate the derivative of the input)
+      // Derivatives
       // Only for roll and pitch to save on OTA time
-      int32_t vR = rollVelocityFilter.update(adc_value[ADC_A_CH]);
-      rollAccelerationFilter.update(vR);
 
-      int32_t vP = pitchVelocityFilter.update(adc_value[ADC_E_CH]);
-      pitchAccelerationFilter.update(vP);
+      //  old version - filters automatically calculate the derivative of the input
+      // int32_t vR = rollVelocityFilter.update(adc_value[ADC_A_CH]);
+      // rollAccelerationFilter.update(vR);
 
+      // int32_t vP = pitchVelocityFilter.update(adc_value[ADC_E_CH]);
+      // pitchAccelerationFilter.update(vP);
+
+      if (prevRoll!=0)
+      {
+         int32_t prevVel;
+
+         int32_t velR = (adc_value[ADC_A_CH] - prevRoll) * VELOCITY_SCALE;
+         prevVel = rollVelocityFilter.getCurrent();
+         int32_t newVelR = rollVelocityFilter.update(velR);
+         rollAccelerationFilter.update((newVelR - prevVel) << 7);
+
+         int32_t velP = (adc_value[ADC_E_CH] - prevPitch) * VELOCITY_SCALE;
+         prevVel = pitchVelocityFilter.getCurrent();
+         int32_t newVelP = pitchVelocityFilter.update(velP);
+         pitchAccelerationFilter.update((newVelP - prevVel) << 7);
+      }
+
+      prevRoll = adc_value[ADC_A_CH];
+      prevPitch = adc_value[ADC_E_CH];
 
       nSamples++;
       now = micros();
@@ -544,10 +569,10 @@ void ProcessTLMpacket()
    #ifdef ELRS_OG_COMPATIBILITY
    uint8_t calculatedCRC = ota_crc.calc(radio.RXdataBuffer, 7) + CRCCaesarCipher;
    #else // not ELRS_OG_COMPATIBILITY
-   uint8_t calculatedCRC = CalcCRC(radio.RXdataBuffer, 7) + CRCCaesarCipher;
+   uint8_t calculatedCRC = CalcCRC(radio.RXdataBuffer, OTA_PAYLOAD_SIZE-1) + CRCCaesarCipher;
    #endif // ELRS_OG_COMPATIBILITY
 
-   uint8_t inCRC = radio.RXdataBuffer[7];
+   uint8_t inCRC = radio.RXdataBuffer[OTA_PAYLOAD_SIZE-1];
    if ((inCRC != calculatedCRC))
    {
       #ifndef DEBUG_SUPPRESS
@@ -1147,11 +1172,86 @@ void ICACHE_RAM_ATTR GenerateChannelDataHybridSwitch8(volatile uint8_t* Buffer, 
   setSentSwitch(nextSwitchIndex, value);
 }
 
+int32_t constrain(const int32_t value, const int32_t lower, const int32_t upper)
+{
+   if (value < lower) return lower;
+   if (value > upper) return upper;
+   return value;
+}
+
+/** Formats and writes the RC data into a buffer
+ * 
+ * Writes header, stick position velocity and acceleration, and switch data
+ * into the buffer.
+ * 
+ * NB Currently grabs velocity and acceleration from global variables which is
+ * inconsistent with other params. Needs to be cleaned up.
+ * 
+ */
+void ICACHE_RAM_ATTR GenerateRCDData(volatile uint8_t* Buffer, uint16_t *adcData, uint8_t addr)
+{
+   // cast the buffer to the struct
+   rcPlusDerivatives_t *b = (rcPlusDerivatives_t *)Buffer;
+
+   b->header = (addr << 2) | RC_DATA_PACKET;
+
+   b->ch0 = adcData[0] >> 1; // adcData contains 11 bit values but we're only sending 10 (for now)
+   b->ch1 = adcData[1] >> 1;
+   b->ch2 = adcData[2] >> 1;
+   b->ch3 = adcData[3] >> 1;
+
+   int32_t scaledV, scaledA;
+
+   if (ADC_ROLL_REVERSED) {
+      scaledV = -rollVelocityFilter.getCurrent()/VELOCITY_OUTPUT_SCALE;
+      scaledA = -rollAccelerationFilter.getCurrent() >> 7;
+   } else {
+      scaledV = rollVelocityFilter.getCurrent()/VELOCITY_OUTPUT_SCALE;
+      scaledA = rollAccelerationFilter.getCurrent() >> 7;
+   }
+   scaledV = constrain(scaledV, -512, 511);
+   scaledA = constrain(scaledA, -512, 511);
+
+   b->ch0Velocity = scaledV;
+   b->ch0Acceleration = scaledA;
+
+   if (ADC_PITCH_REVERSED) {
+      scaledV = -pitchVelocityFilter.getCurrent()/VELOCITY_OUTPUT_SCALE;
+      scaledA = -pitchAccelerationFilter.getCurrent() >> 7;
+   } else {
+      scaledV = pitchVelocityFilter.getCurrent()/VELOCITY_OUTPUT_SCALE;
+      scaledA = pitchAccelerationFilter.getCurrent() >> 7;
+   }
+   scaledV = constrain(scaledV, -512, 511);
+   scaledA = constrain(scaledA, -512, 511);
+
+   b->ch1Velocity = scaledV;
+   b->ch1Acceleration = scaledA;
+
+   // switch 0 is sent on every packet - intended for low latency arm/disarm
+   b->sw0 = currentSwitches[0] & 0b11;
+
+   // find the next switch to send
+   uint8_t nextSwitchIndex = getNextSwitchIndex() & 0b111;  // mask for paranoia
+   uint8_t value = currentSwitches[nextSwitchIndex] & 0b11; // mask for paranoia
+
+   b->swIndex = nextSwitchIndex;
+   b->swValue = value;
+
+   // update the sent value
+   setSentSwitch(nextSwitchIndex, value);
+}
+
+
 // crsf uses a reduced range, and BF expects to see it.
 const static uint32_t MAX_OUT = 1811;
 const static uint32_t MID_OUT =  992;
 const static uint32_t MIN_OUT =  172;
 
+/** convert adc raw range to CRSF protocol format.
+ * CRSF uses 11 bit data with man and max values as above (so actually only 10.6 bits of resolution)
+ * TODO Replace this with a new 0 to 2^n - 1 protocol with greater bit depth
+ */
 uint32_t scaleADCtoCRSF(const uint32_t min, const uint32_t centre, const uint32_t max, 
                         const uint32_t adcValue, const bool reversed)
 {
@@ -1342,10 +1442,14 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
       scaledADC[2] = scaleThrottleData(aud_throttle.getCurrent());
       scaledADC[3] = scaleYawData(aud_yaw.getCurrent());
 
-      printf("%u %ld %ld ", scaledADC[0], rollVelocityFilter.getCurrent(), rollAccelerationFilter.getCurrent());
-      printf("%u %ld %ld\n", scaledADC[1], pitchVelocityFilter.getCurrent(), pitchAccelerationFilter.getCurrent());
+      // printf("%u %ld %ld\n", scaledADC[0], rollVelocityFilter.getCurrent()/VELOCITY_OUTPUT_SCALE, rollAccelerationFilter.getCurrent() >> 7);
+      // printf("%u %ld %ld\n", scaledADC[1], pitchVelocityFilter.getCurrent(), pitchAccelerationFilter.getCurrent());
 
+      #ifdef USE_DERIVATIVES
+      GenerateRCDData(radio.TXdataBuffer, scaledADC, DeviceAddr);
+      #elif
       GenerateChannelDataHybridSwitch8(radio.TXdataBuffer, scaledADC, DeviceAddr);
+      #endif
    }
 
    ///// Next, Calculate the CRC and put it into the buffer /////
@@ -1354,19 +1458,22 @@ void ICACHE_RAM_ATTR SendRCdataToRF()
 
    // TODO - make this the default for all cases
    uint8_t crc = ota_crc.calc(radio.TXdataBuffer, 7) + CRCCaesarCipher;
+   radio.TXdataBuffer[7] = crc;
+   radio.TXnb(radio.TXdataBuffer, 8);
 
    #else // not ELRS_OG_COMPATIBILITY
 
-   uint8_t crc = CalcCRC(radio.TXdataBuffer, 7) + CRCCaesarCipher;
+   // XXX This needs to be different for non-derivative case. restructure with the Generate* calls above
+
+   uint8_t crc = CalcCRC(radio.TXdataBuffer, RCD_BUFFERSIZE-1) + CRCCaesarCipher;
+   radio.TXdataBuffer[RCD_BUFFERSIZE-1] = crc;
+   radio.TXnb(radio.TXdataBuffer, RCD_BUFFERSIZE);
 
    #endif // ELRS_OG_COMPATIBILITY
-
-   radio.TXdataBuffer[7] = crc;
    
 
    // gpio_bit_reset(LED_GPIO_PORT, LED_PIN);  // clear the rx debug pin as we're definitely not listening now
 
-   radio.TXnb(radio.TXdataBuffer, 8);
 
 
 //   if (ChangeAirRateRequested)
@@ -2110,6 +2217,7 @@ int main(void)
          // we have become disarmed - brighten the display, reduce tx power
          timer_channel_output_pulse_value_config(TIMER1, TIMER_CH_2, LCD_PWM_MAX); // low brightness
          #ifdef DISARM_POWER
+         // TODO check that the current power isn't lower than DISARM_POWER - don't want to increase it
          radio.SetOutputPower(DISARM_POWER);
          #endif
          statusIsArmed = false;
